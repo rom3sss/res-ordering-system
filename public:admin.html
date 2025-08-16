@@ -1,0 +1,208 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Admin — Orders</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>Ticket Rail</h1>
+      <small class="muted">New orders appear here instantly with a ping.</small>
+      <div id="orders" class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px,1fr)); margin-top:10px;"></div>
+    </div>
+
+
+    <div class="card" style="margin-top:12px;">
+      <h2>Menu Management</h2>
+      <div id="menuMgmt"></div>
+      <hr class="sep" />
+      <div class="grid" style="grid-template-columns: 1fr 1fr 1fr 1fr; gap:10px;">
+        <select id="addCategory"></select>
+        <input id="addName" placeholder="Item name" />
+        <input id="addPrice" placeholder="Price (e.g. 89.90)" />
+        <button id="addBtn" class="btn">Add Item</button>
+      </div>
+      <textarea id="addDesc" placeholder="Description (optional)" style="margin-top:10px;"></textarea>
+    </div>
+  </div>
+
+
+  <script>
+    const socket = io();
+    const rands = cents => "R" + (cents / 100).toFixed(2);
+    const state = { orders: [], menu: [] };
+
+
+    function playPing() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator(); const g = ctx.createGain();
+        o.type = "sine"; o.frequency.value = 880; g.gain.value = 0.001;
+        o.connect(g); g.connect(ctx.destination);
+        g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
+        o.start(); o.stop(ctx.currentTime + 0.25);
+      } catch(e) {}
+    }
+
+
+    async function loadOrders() {
+      const res = await fetch("/api/orders");
+      const data = await res.json();
+      state.orders = data.orders;
+      renderOrders();
+    }
+
+
+    async function loadMenu() {
+      const res = await fetch("/api/menu");
+      const data = await res.json();
+      state.menu = data.categories;
+      renderMenuMgmt();
+    }
+
+
+    function renderOrders() {
+      const root = document.getElementById("orders");
+      root.innerHTML = "";
+      state.orders.forEach(o => {
+        const card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML = `
+          <div class="row" style="justify-content:space-between;">
+            <div><strong>#${o.id}</strong> • ${o.customer_name}</div>
+            <span class="badge ${o.status}">${o.status}</span>
+          </div>
+          <small class="muted">${o.phone}</small>
+          <hr class="sep" />
+          <div class="items">
+            ${o.items.map(it => `<div class="item"><div>${it.item_name_snapshot} × ${it.qty}</div><div>${rands(it.price_cents_snapshot * it.qty)}</div></div>`).join("")}
+          </div>
+          <hr class="sep" />
+          <div class="row" style="justify-content:space-between;">
+            <div><strong>Total: ${rands(o.total_cents)}</strong></div>
+            <div class="row">
+              ${o.status !== "NEW" ? "" : `<button class="btn" data-next="PREPARING" data-id="${o.id}">Preparing</button>`}
+              ${o.status !== "PREPARING" ? "" : `<button class="btn warn" data-next="READY" data-id="${o.id}">Ready</button>`}
+              ${o.status !== "READY" ? "" : `<button class="btn good" data-next="COMPLETED" data-id="${o.id}">Completed</button>`}
+            </div>
+          </div>
+        `;
+        root.appendChild(card);
+      });
+
+
+      root.querySelectorAll("[data-next]").forEach(b => {
+        b.onclick = async () => {
+          await fetch(`/api/orders/${b.dataset.id}/status`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: b.dataset.next })
+          });
+        };
+      });
+    }
+
+
+    function renderMenuMgmt() {
+      const root = document.getElementById("menuMgmt");
+      root.innerHTML = state.menu.map(cat => `
+        <div class="card" style="margin-top:10px;">
+          <h3>${cat.name}</h3>
+          <div class="items">
+            ${cat.items.map(it => `
+              <div class="item">
+                <div>
+                  <div><strong>${it.name}</strong> <small class="muted">• ${rands(it.price_cents)}</small></div>
+                  <small class="muted">${it.description || ""}</small>
+                </div>
+                <div class="row">
+                  <button class="btn secondary" data-edit="${it.id}">Edit</button>
+                  <button class="btn ${it.available ? "bad" : "good"}" data-toggle="${it.id}">
+                    ${it.available ? "Mark Unavailable" : "Mark Available"}
+                  </button>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `).join("");
+
+
+      // Category dropdown for add form
+      const sel = document.getElementById("addCategory");
+      sel.innerHTML = state.menu.map(c => `<option value="${c.id}">${c.name}</option>`).join("");
+
+
+      root.querySelectorAll("[data-toggle]").forEach(b => {
+        b.onclick = async () => {
+          await fetch(`/api/menu/${b.dataset.toggle}/availability`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ available: b.textContent.includes("Unavailable") ? 0 : 1 })
+          });
+          await loadMenu();
+        };
+      });
+
+
+      root.querySelectorAll("[data-edit]").forEach(b => {
+        b.onclick = () => openEdit(b.dataset.edit);
+      });
+    }
+
+
+    function openEdit(id) {
+      const catMap = new Map();
+      state.menu.forEach(c => c.items.forEach(i => catMap.set(i.id, { item: i, category: c })));
+      const { item } = catMap.get(Number(id));
+      const name = prompt("Edit name:", item.name); if (name == null) return;
+      const desc = prompt("Edit description:", item.description || ""); if (desc == null) return;
+      const price = prompt("Edit price (e.g. 89.90):", (item.price_cents/100).toFixed(2)); if (price == null) return;
+      fetch(`/api/menu/${id}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, description: desc, priceZAR: Number(price) })
+      }).then(loadMenu);
+    }
+
+
+    document.getElementById("addBtn").onclick = async () => {
+      const categoryId = Number(document.getElementById("addCategory").value);
+      const name = document.getElementById("addName").value.trim();
+      const priceZAR = Number(document.getElementById("addPrice").value.replace(",", "."));
+      const description = document.getElementById("addDesc").value.trim();
+      if (!categoryId || !name || !priceZAR) { alert("Category, name, and price are required."); return; }
+      await fetch("/api/menu", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ categoryId, name, description, priceZAR })
+      });
+      document.getElementById("addName").value = "";
+      document.getElementById("addPrice").value = "";
+      document.getElementById("addDesc").value = "";
+      await loadMenu();
+    };
+
+
+    // Live updates
+    socket.on("order:new", (order) => {
+      playPing();
+      state.orders.unshift(order);
+      renderOrders();
+    });
+    socket.on("order:update", (order) => {
+      const idx = state.orders.findIndex(o => o.id === order.id);
+      if (idx >= 0) state.orders[idx] = order;
+      else state.orders.unshift(order);
+      renderOrders();
+    });
+
+
+    loadOrders();
+    loadMenu();
+  </script>
+</body>
+</html>

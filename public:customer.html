@@ -1,0 +1,170 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Menu — Order</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>Menu</h1>
+      <small class="muted">Build your order, then review & place. Pay on collection.</small>
+      <div id="menu"></div>
+      <hr class="sep" />
+      <div class="row">
+        <button id="reviewBtn" class="btn">Review Order</button>
+        <div id="cartSummary" class="muted"></div>
+      </div>
+    </div>
+
+
+    <div id="review" class="card" style="margin-top:12px; display:none;">
+      <h2>Review Order</h2>
+      <div id="reviewList"></div>
+      <hr class="sep" />
+      <div class="grid" style="grid-template-columns:1fr 1fr; gap:10px;">
+        <input id="custName" placeholder="Your Name" />
+        <input id="custPhone" placeholder="Your Phone Number" />
+      </div>
+      <div class="row" style="justify-content: space-between; margin-top:10px;">
+        <div><strong>Total: </strong><span id="totalZAR">R0.00</span></div>
+        <button id="placeBtn" class="btn good">Place Order</button>
+      </div>
+    </div>
+
+
+    <div id="confirm" class="card" style="margin-top:12px; display:none;"></div>
+  </div>
+
+
+  <script>
+    const state = { menu: [], cart: {} }; // cart: {itemId: qty}
+    const rands = cents => "R" + (cents / 100).toFixed(2);
+
+
+    async function loadMenu() {
+      const res = await fetch("/api/menu");
+      const data = await res.json();
+      state.menu = data.categories;
+      renderMenu();
+      updateCartSummary();
+    }
+
+
+    function addToCart(itemId, delta) {
+      const qty = (state.cart[itemId] || 0) + delta;
+      if (qty <= 0) delete state.cart[itemId];
+      else state.cart[itemId] = qty;
+      renderMenu();
+      updateCartSummary();
+    }
+
+
+    function renderMenu() {
+      const root = document.getElementById("menu");
+      root.innerHTML = "";
+      state.menu.forEach(cat => {
+        const wrap = document.createElement("div");
+        wrap.innerHTML = `<h3>${cat.name}</h3>`;
+        const list = document.createElement("div");
+        list.className = "items";
+        cat.items.forEach(it => {
+          const inCart = state.cart[it.id] || 0;
+          const div = document.createElement("div");
+          div.className = "item" + (it.available ? "" : " unavail");
+          div.innerHTML = `
+            <div>
+              <div><strong>${it.name}</strong> <small class="muted">• ${rands(it.price_cents)}</small></div>
+              <small class="muted">${it.description || ""}</small>
+            </div>
+            <div class="row">
+              <button class="btn secondary" ${!it.available ? "disabled" : ""} data-dec="${it.id}">-</button>
+              <div style="min-width:30px; text-align:center">${inCart}</div>
+              <button class="btn" ${!it.available ? "disabled" : ""} data-inc="${it.id}">+</button>
+            </div>
+          `;
+          list.appendChild(div);
+        });
+        wrap.appendChild(list);
+        root.appendChild(wrap);
+        root.appendChild(document.createElement("hr")).className = "sep";
+      });
+
+
+      root.querySelectorAll("[data-inc]").forEach(b => b.onclick = () => addToCart(Number(b.dataset.inc), +1));
+      root.querySelectorAll("[data-dec]").forEach(b => b.onclick = () => addToCart(Number(b.dataset.dec), -1));
+    }
+
+
+    function cartItemsDetailed() {
+      const map = new Map();
+      state.menu.forEach(c => c.items.forEach(i => map.set(i.id, i)));
+      return Object.entries(state.cart).map(([id, qty]) => {
+        const item = map.get(Number(id));
+        return { id: Number(id), name: item.name, price_cents: item.price_cents, qty };
+      });
+    }
+
+
+    function updateCartSummary() {
+      const items = cartItemsDetailed();
+      const total = items.reduce((s, it) => s + it.price_cents * it.qty, 0);
+      document.getElementById("cartSummary").textContent = items.length
+        ? `${items.length} item(s) • ${rands(total)}`
+        : `Cart is empty`;
+    }
+
+
+    function showReview() {
+      const rev = document.getElementById("review");
+      const list = document.getElementById("reviewList");
+      const items = cartItemsDetailed();
+      if (!items.length) { alert("Your cart is empty."); return; }
+      list.innerHTML = items.map(it => `
+        <div class="item">
+          <div>${it.name} × ${it.qty}</div>
+          <div>${rands(it.price_cents * it.qty)}</div>
+        </div>
+      `).join("");
+      const total = items.reduce((s, it) => s + it.price_cents * it.qty, 0);
+      document.getElementById("totalZAR").textContent = rands(total);
+      rev.style.display = "block";
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+    }
+
+
+    async function placeOrder() {
+      const name = document.getElementById("custName").value.trim();
+      const phone = document.getElementById("custPhone").value.trim();
+      if (!name || !phone) { alert("Please enter your name and phone."); return; }
+      const items = cartItemsDetailed().map(it => ({ itemId: it.id, qty: it.qty }));
+      const res = await fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customerName: name, phone, items })
+      });
+      const data = await res.json();
+      if (!data.ok) { alert(data.error || "Failed to place order"); return; }
+      state.cart = {};
+      renderMenu(); updateCartSummary();
+      document.getElementById("review").style.display = "none";
+      const c = document.getElementById("confirm");
+      c.innerHTML = `<h2>Thank you, ${name}!</h2>
+        <p>Your Order <strong>#${data.orderId}</strong> has been received.<br/>
+        We will notify you when it's ready for collection.</p>
+        <a href="/customer">Place another order</a>`;
+      c.style.display = "block";
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+    }
+
+
+    document.getElementById("reviewBtn").onclick = showReview;
+    document.getElementById("placeBtn").onclick = placeOrder;
+
+
+    loadMenu();
+  </script>
+</body>
+</html>
